@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>VOX_EYE_TRACKING_MOBILE</title>
+    <style>
+        body { margin: 0; background: #000; overflow: hidden; font-family: 'Courier New', Courier, monospace; touch-action: none; }
+        #overlay { position: absolute; top: 10px; left: 10px; color: #00ffff; pointer-events: none; z-index: 10; font-size: 10px; opacity: 0.7; }
+    </style>
+</head>
+<body>
+    <div id="overlay">SYSTEM: MOBILE_RESPONSIVE_v3<br>EYE_TRACKING: ACTIVE</div>
+
+    <script type="module">
+        import * as THREE from 'https://cdnjs.cloudflare.com/ajax/libs/three.js/0.160.0/three.module.min.js';
+
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 1000);
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        document.body.appendChild(renderer.domElement);
+
+        // Stato per il mouse/touch
+        const mouse = new THREE.Vector2(0.5, 0.5);
+        const targetMouse = new THREE.Vector2(0.5, 0.5);
+
+        const voxVertexShader = `
+            varying vec2 vUv;
+            void main() {
+                vUv = uv;
+                gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+            }
+        `;
+
+        const voxFragmentShader = `
+            varying vec2 vUv;
+            uniform float uTime;
+            uniform vec2 uMouse;
+
+            float sdEye(vec2 p, float width, float height) {
+                p.y += p.x * p.x * 0.6; 
+                return length(p / vec2(width, height)) - 1.0;
+            }
+
+            void main() {
+                vec2 uv = vUv;
+                vec3 bgCol = vec3(0.02, 0.06, 0.12);
+                vec3 eyeRed = vec3(1.0, 0.0, 0.15);  
+                vec3 mouthCyan = vec3(0.5, 1.0, 1.0);
+
+                // Calcolo offset pupille basato sul mouse (limite movimento)
+                vec2 eyeLook = (uMouse - 0.5) * 0.15;
+
+                // --- 1. OCCHI ---
+                vec2 pL = (uv - vec2(0.25, 0.65)) * 1.5;
+                float maskL = smoothstep(0.01, -0.01, sdEye(pL, 0.35, 0.18));
+                
+                vec2 pR = (uv - vec2(0.75, 0.65)) * 1.5;
+                float maskR = smoothstep(0.01, -0.01, sdEye(pR, 0.38, 0.22));
+
+                // Pupille con tracking
+                float pupL = smoothstep(0.02, 0.01, abs(uv.x - 0.25 - eyeLook.x)) * step(0.58 + eyeLook.y, uv.y) * step(uv.y, 0.72 + eyeLook.y);
+                float wave = sin(uv.y * 60.0 - uTime * 20.0) * 0.015;
+                float pupR = smoothstep(0.025, 0.01, abs(uv.x - 0.75 - eyeLook.x + wave)) * maskR;
+
+                // --- 2. SOPRACCIGLIA ---
+                float browL = smoothstep(0.02, 0.0, abs((uv.y - 0.92) + (uv.x - 0.22) * 0.4)) * step(uv.x, 0.32) * step(0.18, uv.x);
+                float browR = smoothstep(0.02, 0.0, abs((uv.y - 0.92) - (uv.x - 0.78) * 0.4)) * step(uv.x, 0.82) * step(0.68, uv.x);
+
+                // --- 3. SORRISO ---
+                vec2 mUv = uv - vec2(0.5, 0.12);
+                float smileCurve = mUv.y - pow(mUv.x, 2.0) * 1.2; 
+                float mouthMask = smoothstep(0.10, 0.08, abs(smileCurve)) * step(abs(mUv.x), 0.40) * step(uv.y, 0.45);
+                
+                float teethZig = abs(fract(uv.x * 14.0) - 0.5) * 0.10;
+                float teethMask = step(smileCurve + 0.03, teethZig) * step(teethZig, smileCurve + 0.12);
+
+                vec3 color = bgCol;
+                color = mix(color, eyeRed, maskL + maskR);
+                color = mix(color, vec3(0.0), browL + browR); 
+                color = mix(color, vec4(1.0).rgb, pupL * maskL); 
+                color = mix(color, vec3(0.0), pupR);       
+                color = mix(color, mouthCyan, mouthMask);
+                color = mix(color, bgCol * 0.3, mouthMask * teethMask); 
+
+                float scanline = sin(uv.y * 1000.0) * 0.02;
+                gl_FragColor = vec4(color + scanline, 1.0);
+            }
+        `;
+
+        const frameGeom = new THREE.BoxGeometry(4.5, 3.5, 1);
+        const frameMat = new THREE.MeshStandardMaterial({ color: 0x050505, roughness: 0.1 });
+        const cabinet = new THREE.Mesh(frameGeom, frameMat);
+        scene.add(cabinet);
+
+        const screenGeom = new THREE.PlaneGeometry(4.2, 3.2);
+        const screenMat = new THREE.ShaderMaterial({
+            uniforms: { 
+                uTime: { value: 0 },
+                uMouse: { value: mouse }
+            },
+            vertexShader: voxVertexShader,
+            fragmentShader: voxFragmentShader
+        });
+        const screen = new THREE.Mesh(screenGeom, screenMat);
+        screen.position.z = 0.51;
+        cabinet.add(screen);
+
+        const createAntenna = (x, rot) => {
+            const group = new THREE.Group();
+            const rod = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.04, 1.2), frameMat);
+            const tip = new THREE.Mesh(new THREE.SphereGeometry(0.08), frameMat);
+            tip.position.y = 0.6; group.add(rod, tip);
+            group.position.set(x, 2, 0); group.rotation.z = rot;
+            return group;
+        };
+        cabinet.add(createAntenna(-0.7, 0.4), createAntenna(0.7, -0.4));
+
+        const light = new THREE.PointLight(0x00ffff, 2, 10);
+        light.position.set(0, 0, 2);
+        scene.add(light, new THREE.AmbientLight(0xffffff, 0.6));
+
+        // Funzione Responsive
+        function handleResize() {
+            const w = window.innerWidth;
+            const h = window.innerHeight;
+            renderer.setSize(w, h);
+            camera.aspect = w / h;
+            
+            // Adatta la distanza della camera se lo schermo è verticale (mobile)
+            if (w < h) {
+                camera.position.z = 10;
+                cabinet.scale.set(1.2, 1.2, 1.2);
+            } else {
+                camera.position.z = 6;
+                cabinet.scale.set(1, 1, 1);
+            }
+            camera.updateProjectionMatrix();
+        }
+
+        window.addEventListener('resize', handleResize);
+        handleResize();
+
+        // Eventi Mouse e Touch
+        window.addEventListener('mousemove', (e) => {
+            targetMouse.x = e.clientX / window.innerWidth;
+            targetMouse.y = 1.0 - (e.clientY / window.innerHeight);
+        });
+
+        window.addEventListener('touchmove', (e) => {
+            targetMouse.x = e.touches[0].clientX / window.innerWidth;
+            targetMouse.y = 1.0 - (e.touches[0].clientY / window.innerHeight);
+        });
+
+        function animate() {
+            requestAnimationFrame(animate);
+            const t = performance.now() * 0.001;
+            
+            // Smoothing del movimento del mouse (lerp)
+            mouse.x += (targetMouse.x - mouse.x) * 0.1;
+            mouse.y += (targetMouse.y - mouse.y) * 0.1;
+            screenMat.uniforms.uMouse.value = mouse;
+            screenMat.uniforms.uTime.value = t;
+
+            // Rotazione cabinet basata sul mouse
+            cabinet.rotation.y = (mouse.x - 0.5) * 0.4;
+            cabinet.rotation.x = (mouse.y - 0.5) * -0.2;
+            
+            renderer.render(scene, camera);
+        }
+
+        animate();
+    </script>
+</body>
+</html>
